@@ -126,14 +126,6 @@ them, the address must match) and keep the `_authorize` calls. If you charge a f
 in the token by hook delta, authorize the net leg the PoolManager will actually
 move.
 
-## Known limits
-
-- An enforced token cannot pay a Uniswap v4 protocol fee on its own side. If governance
-  ever enables one on a canonical pool, the token portion accrues inside the PoolManager
-  and `collectProtocolFees` reverts on it; the other currency collects normally.
-- Claims that entered through the canonical pool can be traded between claim holders on a
-  copy pool without a fee. They cannot leave as tokens without a canonical trade.
-
 ## Consumer notes
 
 Routers read `venueEnforcement()`, `canonicalPools()` and `externalVenues()`, and
