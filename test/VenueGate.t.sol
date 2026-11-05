@@ -21,6 +21,43 @@ import {ERC20S} from "../src/ERC20S.sol";
 import {VenueGateHook} from "../src/VenueGateHook.sol";
 import {ExampleERC20S} from "../src/ExampleERC20S.sol";
 
+/// @dev Acts as an allowed hook and spends its own grant, all inside one call
+///      (one transaction), the way a hook and a router do around a swap.
+contract BudgetProbe {
+    ERC20S internal immutable token;
+    address internal immutable manager;
+
+    constructor(ERC20S token_, address manager_) {
+        token = token_;
+        manager = manager_;
+    }
+
+    function run()
+        external
+        returns (
+            uint256 inBudget,
+            uint256 outBudget,
+            bytes memory overErr,
+            bytes memory spentErr,
+            uint256 left
+        )
+    {
+        token.authorizePoolManagerTransfer(true, 10);
+        inBudget = token.poolManagerTransferBudget(true);
+        outBudget = token.poolManagerTransferBudget(false);
+
+        try token.transfer(manager, 11) {} catch (bytes memory err) {
+            overErr = err;
+        }
+        token.transfer(manager, 10);
+        left = token.poolManagerTransferBudget(true);
+
+        try token.transfer(manager, 1) {} catch (bytes memory err) {
+            spentErr = err;
+        }
+    }
+}
+
 /// @notice The URC-5 template end to end: a hookless copy pool cannot take the
 ///         token, the canonical pool settles every shape, the budget is exact
 ///         per direction, external venues are gated by address, the views and
@@ -243,21 +280,23 @@ contract VenueGateTest is Test {
         vm.expectRevert(ERC20S.NotHook.selector);
         token.authorizePoolManagerTransfer(true, 1);
 
-        vm.prank(address(hook));
-        token.authorizePoolManagerTransfer(true, 10);
-        assertEq(token.poolManagerTransferBudget(true), 10);
-        assertEq(token.poolManagerTransferBudget(false), 0);
+        // The budget lives in transient storage, so the grant and every
+        // transfer that spends it must share one transaction. Foundry clears
+        // transient storage between top-level test calls, so run them from a
+        // single call of an allowed hook.
+        BudgetProbe probe = new BudgetProbe(token, address(manager));
+        vm.prank(owner);
+        token.setHook(address(probe), true);
+        vm.prank(trader);
+        token.transfer(address(probe), 20);
 
-        vm.prank(trader);
-        vm.expectRevert(_venueNotAllowed(address(manager), true));
-        token.transfer(address(manager), 11);
-        vm.prank(trader);
-        token.transfer(address(manager), 10);
-        assertEq(token.poolManagerTransferBudget(true), 0);
-
-        vm.prank(trader);
-        vm.expectRevert(_venueNotAllowed(address(manager), true));
-        token.transfer(address(manager), 1);
+        (uint256 inBudget, uint256 outBudget, bytes memory over, bytes memory spent, uint256 left) =
+            probe.run();
+        assertEq(inBudget, 10);
+        assertEq(outBudget, 0);
+        assertEq(over, _venueNotAllowed(address(manager), true));
+        assertEq(left, 0);
+        assertEq(spent, _venueNotAllowed(address(manager), true));
     }
 
     function test_walletTransfersAreFree() public {
